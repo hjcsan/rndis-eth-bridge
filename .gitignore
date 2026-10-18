@@ -1,0 +1,8 @@
+# 打包产物（由 module/ 目录重新生成，不入版本控制可以避免二进制膨胀；
+# 但 Magisk 用户需要 zip，所以这里保留 module/rndis_eth_bridge.zip 并允许提交）
+*.tmp
+*.log
+*.pid
+eth.pid
+guard.pid
+.DS_Store

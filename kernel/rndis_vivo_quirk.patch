@@ -1,0 +1,86 @@
+diff --git a/drivers/net/usb/cdc_ether.c b/drivers/net/usb/cdc_ether.c
+index f07bfe5..8ffcc52 100644
+--- a/drivers/net/usb/cdc_ether.c
++++ b/drivers/net/usb/cdc_ether.c
+@@ -118,9 +118,25 @@ int usbnet_generic_cdc_bind(struct usbnet *dev, struct usb_interface *intf)
+ 	int				status;
+ 	int				rndis;
+ 	bool				android_rndis_quirk = false;
++	bool				vivo_rndis_quirk = false;
+ 	struct usb_driver		*driver = driver_of(intf);
+ 	struct usb_cdc_parsed_header header;
+ 
++	/*
++	 * vivo/iQOO (2d95:600a, 2d95:6012) report a CDC Union descriptor with
++	 * bMasterInterface0/bSlaveInterface0 pointing at interfaces 0 and 1,
++	 * but the configuration's wTotalLength does not cover the trailing
++	 * CDC-Data interface reliably, so generic CDC parsing bails out with
++	 * "bad CDC descriptors" and the RNDIS data interface is never claimed.
++	 * The layout is byte-for-byte the standard RNDIS one (IAD says two
++	 * interfaces, class e0/01/03 on interface 0), so just hard-wire 0/1
++	 * exactly like the Android RNDIS fallback path does.
++	 */
++	if (le16_to_cpu(dev->udev->descriptor.idVendor) == 0x2d95 &&
++	    (le16_to_cpu(dev->udev->descriptor.idProduct) == 0x600a ||
++	     le16_to_cpu(dev->udev->descriptor.idProduct) == 0x6012))
++		vivo_rndis_quirk = true;
++
+ 	if (sizeof(dev->data) < sizeof(*info))
+ 		return -EDOM;
+ 
+@@ -160,6 +176,12 @@ int usbnet_generic_cdc_bind(struct usbnet *dev, struct usb_interface *intf)
+ 		 is_wireless_rndis(&intf->cur_altsetting->desc) ||
+ 		 is_novatel_rndis(&intf->cur_altsetting->desc));
+ 
++	if (vivo_rndis_quirk) {
++		dev_info(&intf->dev,
++			 "vivo RNDIS quirk: forcing hard-wired interfaces 0/1\n");
++		rndis = 1;
++	}
++
+ 	memset(info, 0, sizeof(*info));
+ 	info->control = intf;
+ 
+@@ -195,7 +217,7 @@ int usbnet_generic_cdc_bind(struct usbnet *dev, struct usb_interface *intf)
+ 		goto bad_desc;
+ 	}
+ 	if (info->control != intf) {
+-		dev_dbg(&intf->dev, "bogus CDC Union\n");
++		dev_info(&intf->dev, "bogus CDC Union\n");
+ 		/* Ambit USB Cable Modem (and maybe others)
+ 		 * interchanges master and slave interface.
+ 		 */
+@@ -213,7 +235,7 @@ int usbnet_generic_cdc_bind(struct usbnet *dev, struct usb_interface *intf)
+ 	/* a data interface altsetting does the real i/o */
+ 	d = &info->data->cur_altsetting->desc;
+ 	if (d->bInterfaceClass != USB_CLASS_CDC_DATA) {
+-		dev_dbg(&intf->dev, "slave class %u\n", d->bInterfaceClass);
++		dev_info(&intf->dev, "slave class %u\n", d->bInterfaceClass);
+ 		goto bad_desc;
+ 	}
+ skip:
+@@ -263,11 +285,11 @@ skip:
+ 	 * to non-existing interfaces.  Ignore that and attempt the same
+ 	 * hard-wired 0 and 1 interfaces.
+ 	 */
+-	if (rndis && (!info->u || android_rndis_quirk)) {
++	if (rndis && (!info->u || android_rndis_quirk || vivo_rndis_quirk)) {
+ 		info->control = usb_ifnum_to_if(dev->udev, 0);
+ 		info->data = usb_ifnum_to_if(dev->udev, 1);
+ 		if (!info->control || !info->data || info->control != intf) {
+-			dev_dbg(&intf->dev,
++			dev_info(&intf->dev,
+ 				"rndis: master #0/%p slave #1/%p\n",
+ 				info->control,
+ 				info->data);
+@@ -328,7 +350,9 @@ skip:
+ 	return 0;
+ 
+ bad_desc:
+-	dev_info(&dev->udev->dev, "bad CDC descriptors\n");
++	dev_info(&dev->udev->dev,
++		 "bad CDC descriptors (u=%p header=%p ether=%p ctrl=%p data=%p rndis=%d)\n",
++		 info->u, info->header, info->ether, info->control, info->data, rndis);
+ 	return -ENODEV;
+ }
+ EXPORT_SYMBOL_GPL(usbnet_generic_cdc_bind);
