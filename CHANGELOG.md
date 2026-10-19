@@ -50,6 +50,12 @@ v2.3 及更早版本用 sysfs 路径（`*xhci-hcd*`）判断「是不是手机�
 - 三场景模拟（RNDIS+CDC+gadget 并存 / 只有 CDC / 只有 RNDIS）选中结果全部正确
 - 已部署到设备（`/data/adb/modules/rndis_eth_bridge/`，daemon 7154 B），
   守护重启后 `action.sh` 正常输出
+- **真机实测（插上 iQOO 12）**：`eth0` 驱动名 `rndis_host`、路径含 `xhci-hcd`，
+  新版守护 `10:19:00` 完成 `usb0 → eth0`，`action.sh` 显示 `[手机共享(RNDIS)]`
+- **App 层确认可上网**：`network{103} ni{Ethernet CONNECTED}`，
+  capabilities 含 `VALIDATED`，`Active default network: 103`，
+  `firstValidated`/`lastValidated` 均已置位；IPv4/IPv6 探测均 HTTP 200
+- **整机重启自动生效**：用户实测重启后模块自启正常，无需人工干预
 
 ---
 

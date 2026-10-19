@@ -606,6 +606,9 @@ src=${d##*/}; break                      # 第一个命中就停
 | **App 实测（关 WiFi）** | ✅ **依然正常**——证明走的是 USB 而非 WiFi |
 | 单实例保护 | ✅ 连续启动 3 次，始终只有 1 个守护进程 |
 | 重启后直连 | ✅ USB 网段地址 `10.195.23.239` 可直接 `adb connect` |
+| **v2.4 驱动名判据（真机）** | ✅ `eth0` 驱动为 `rndis_host`，`action.sh` 显示 `[手机共享(RNDIS)]` |
+| **v2.4 App 层验证** | ✅ `ni{Ethernet CONNECTED}` 且 capabilities 含 `VALIDATED`，默认网络指向它 |
+| **v2.4 重启自启** | ✅ 用户实测重启后自动生效，无需人工干预 |
 
 ### 测试环境
 
