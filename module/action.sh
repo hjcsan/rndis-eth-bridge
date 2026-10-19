@@ -44,13 +44,24 @@ show_iface() {
     [ -n "$addr" ] && echo "      $addr"
 }
 
-# 网卡类型按 sysfs 路径判断，不能按名字判断：
-#   内核按分配顺序起名，RNDIS 有时是 usb1、有时是 usb0，名字不可靠。
+# 网卡类型判断。两级判据：
+#   1) 驱动名（最可靠）：/sys/class/net/X/device/driver -> rndis_host / cdc_ether / r8152 ...
+#   2) sysfs 路径（兜底）：读不到驱动名时看是否含 xhci-hcd / gadget
+# 不能按名字判断：内核按分配顺序起名，RNDIS 有时是 usb1、有时是 usb0。
+# 也不能只看路径：外接 USB 网卡和 RNDIS 一样挂在 xhci-hcd 下，路径区分不开。
 which_kind() {
+    drv=$(readlink -f "/sys/class/net/$1/device/driver" 2>/dev/null)
+    drv=${drv##*/}
+    case "$drv" in
+        rndis_host)  echo "手机共享(RNDIS)"; return ;;
+        cdc_ether)   echo "USB网卡(cdc_ether)"; return ;;
+        r8152)       echo "USB网卡(r8152)"; return ;;
+        ax88179_178a) echo "USB网卡(ax88179)"; return ;;
+    esac
     p=$(readlink -f "/sys/class/net/$1" 2>/dev/null)
     case "$p" in
-        *xhci-hcd*) echo "手机共享(RNDIS)" ;;
         *gadget*)   echo "平板自身" ;;
+        *xhci-hcd*) echo "USB设备(${drv:-驱动未知})" ;;
         *)          echo "其他" ;;
     esac
 }

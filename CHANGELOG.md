@@ -4,6 +4,55 @@
 
 ---
 
+## v2.4 — 2026-10-19
+
+**修复：选错网卡**
+
+v2.3 及更早版本用 sysfs 路径（`*xhci-hcd*`）判断「是不是手机共享的 RNDIS」，
+这个判据有两个缺陷：
+
+1. **外接 USB 网卡（`cdc_ether` / `r8152` / `ax88179_178a`）挂在同一个 xHCI
+   主机控制器下，路径同样含 `xhci-hcd`**，无法与 RNDIS 区分。
+2. 循环里**没有 `break`**，多个网卡都匹配时 `src` 被最后一个覆盖。
+
+两者叠加的后果：同时插手机和 USB 网卡时，可能去改 USB 网卡，
+**真正该改的手机 RNDIS 反而被漏掉**。
+
+实测构造 `usb0 = rndis_host`、`usb1 = cdc_ether`：
+
+| 逻辑 | 选中 | 结果 |
+|---|---|---|
+| v2.3（路径，无 break） | `usb1` | 改了 USB 网卡，手机漏掉 ❌ |
+| v2.4（驱动名 + break） | `usb0` | 正确命中手机 ✅ |
+
+**改法**
+
+- `rndis-eth-daemon.sh`：读 `/sys/class/net/<if>/device/driver` 取驱动名，
+  只认 `rndis_host`；命中即 `break`。读得到驱动名但不是 `rndis_host` 的
+  一律跳过；读不到驱动名（个别 ROM 权限受限）才按路径兜底。
+- `action.sh` 的 `which_kind()` 同步升级：先按驱动名分
+  `rndis_host` / `cdc_ether` / `r8152` / `ax88179_178a`，再按路径兜底。
+  现在诊断面板能直接显示 USB 网卡的芯片类型，而不是笼统的「手机共享」。
+
+**顺带确认：不会干扰外接网卡**
+
+- `r8152` 走 `alloc_etherdev()`，默认模板就是 `eth%d`
+- `ax88179_178a` 有 `FLAG_ETHER` 但无 `FLAG_POINTTOPOINT` → `eth%d`
+- `cdc_ether` 有 `FLAG_POINTTOPOINT`，但真实 OUI 的 MAC 首字节 `0x02` 位为 0 → `eth%d`
+- `rndis_host` 的 MAC 首字节 `0x02` 位恒置（本地管理）→ 保持 `usb%d`
+
+也就是说**真实 USB 网卡开机就被内核命名为 `ethN`**，我们只扫 `usb*`，碰不到。
+加上「`eth0` 已存在就直接 return」这一道，双保险。
+
+**验证**
+
+- 三个 `.sh` 全部 `bash -n` 通过、NUL=0
+- 三场景模拟（RNDIS+CDC+gadget 并存 / 只有 CDC / 只有 RNDIS）选中结果全部正确
+- 已部署到设备（`/data/adb/modules/rndis_eth_bridge/`，daemon 7154 B），
+  守护重启后 `action.sh` 正常输出
+
+---
+
 ## v2.3 — 2026-10-19
 
 **修复**

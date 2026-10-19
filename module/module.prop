@@ -1,6 +1,6 @@
 id=rndis_eth_bridge
 name=USB网络共享 以太网桥接
-version=2.3
-versionCode=23
+version=2.4
+versionCode=24
 author=hjcsan
 description=手机 USB 网络共享（RNDIS）会被内核命名为 usbN，但 Android 的 EthernetTracker 只认 eth\\d 名字，导致网卡不被认领、App 认为无网络。本模块把 usbN 自动改名为 eth0，让 Android 原生以太网服务接手：自动 DHCP、自动配置 IPv4/IPv6 地址与 DNS、自动注册为默认网络。实测改名后 App 即可正常上网，无需任何 ip rule。

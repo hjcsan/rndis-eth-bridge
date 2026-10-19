@@ -71,20 +71,53 @@ apply_once() {
 
     # 找需要改名的网卡。
     #
-    # 注意：只能按 sysfs 路径判断，不能按网卡名字判断！
-    # 内核按分配顺序给网卡起名 usb0/usb1，同一个手机有时是 usb1、有时是 usb0：
+    # 不能按网卡名字判断！内核按分配顺序给网卡起名 usb0/usb1，
+    # 同一个手机有时是 usb1、有时是 usb0：
     #   手机共享的 RNDIS  ：.../a600000.ssusb/a600000.dwc3/xhci-hcd.4.auto/usb1/1-1/1-1:1.0/net/usbN
     #   平板自身的 gadget：.../a600000.ssusb/a600000.dwc3/gadget.0/net/usbN
     # 早期版本简单地跳过 usb0，结果在 RNDIS 恰好被命名成 usb0 时完全不动作（实测踩到）。
+    #
+    # 但只看路径（*xhci-hcd*）也不够：外接 USB 网卡（cdc_ether / r8152 /
+    # ax88179_178a）挂在同一个 xHCI 主机控制器下，路径同样含 "xhci-hcd"，
+    # 光靠路径没法把它和 RNDIS 区分开。它们的驱动名才是唯一可靠判据：
+    # 只有手机共享是 rndis_host。
+    #
+    # 驱动名从 /sys/class/net/X/device/driver 读。usbnet_probe() 里
+    # SET_NETDEV_DEV(net, &udev->dev) 把 netdev 挂到 USB 接口下，
+    # 所以这个软链一定存在（实测 wlan0 同理指向 cnss_pci）。
+    #
+    # 另外必须 break：旧代码没有 break，两个都匹配时后者覆盖前者，
+    # 真正该改的 RNDIS 会被漏掉。
     src=""
+    fallback=""
     for d in /sys/class/net/usb*; do
         [ -e "$d" ] || continue
         p=$(readlink -f "$d" 2>/dev/null)
-        # 只改 RNDIS（走 xHCI 主机控制器来的），跳过平板自身 gadget
+        # 跳过平板自身作为 USB 从设备时的 gadget 网卡
         case "$p" in
-            *xhci-hcd*) src=${d##*/} ;;
+            *gadget*) continue ;;
+        esac
+        case "$p" in
+            *xhci-hcd*)
+                drv=$(readlink -f "$d/device/driver" 2>/dev/null)
+                drv=${drv##*/}
+                if [ "$drv" = "rndis_host" ]; then
+                    # 精确命中：驱动名证明这是手机 USB 网络共享
+                    src=${d##*/}
+                    break
+                fi
+                # 读得到驱动名但不是 rndis_host → 是别的 USB 网卡，绝不能碰。
+                # 读不到驱动名（个别 ROM 权限受限）→ 记为兜底候选，不立即采用。
+                if [ -z "$drv" ] && [ -z "$fallback" ]; then
+                    fallback=${d##*/}
+                fi
+                ;;
         esac
     done
+    if [ -z "$src" ] && [ -n "$fallback" ]; then
+        src=$fallback
+        log "注意：读不到 $src 的驱动名，按路径兜底处理"
+    fi
     [ -z "$src" ] && return 1
 
     # 改名必须满足两个条件：网卡 down 着、目标名没被占。

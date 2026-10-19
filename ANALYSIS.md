@@ -284,6 +284,68 @@ $ dumpsys ethernet
 判据：路径含 `xhci-hcd` 的是**主机控制器**下的设备（外接），
 含 `gadget` 的是**本机作为从设备**。前者才是手机共享。
 
+> ⚠️ 这一条只够排除「平板自身的 gadget」，**不够区分「手机 RNDIS」和
+> 「外接 USB 网卡」**——后者同样挂在 `xhci-hcd` 下。详见 §6.1。
+
+### 6.1 为什么最终判据必须是「驱动名」而不是「路径」
+
+`usbnet_probe()` 对所有 usbnet 驱动做同一个初始化，名字先统一设成 `usb%d`
+（`drivers/net/usb/usbnet.c`）：
+
+```c
+net = alloc_etherdev(sizeof(*dev));
+strscpy(net->name, "usb%d", sizeof(net->name));   // ← 默认 usbN
+```
+
+然后在 `bind()` 之后按启发式决定要不要改成 `eth%d`：
+
+```c
+// heuristic: "usb%d" for links we know are two-host,
+// else "eth%d" when there's reasonable doubt.
+if ((dev->driver_info->flags & FLAG_ETHER) != 0 &&
+    ((dev->driver_info->flags & FLAG_POINTTOPOINT) == 0 ||
+     (net->dev_addr[0] & 0x02) == 0))
+        strscpy(net->name, "eth%d", sizeof(net->name));
+```
+
+关键在于 `net->dev_addr[0] & 0x02`（MAC 首字节的**本地管理位**）。
+
+各驱动的实际落点：
+
+| 驱动 | `flags` | MAC 首字节 `0x02` | 最终名字 |
+|---|---|---|---|
+| `rndis_host`（手机共享） | `ETHER \| POINTTOPOINT` | **置位**（vivo 用随机本地 MAC） | `usb%d` |
+| `cdc_ether`（USB 网卡） | `ETHER \| POINTTOPOINT` | 清零（真实 OUI） | `eth%d` |
+| `ax88179_178a`（USB 网卡） | `ETHER`，**无** `POINTTOPOINT` | 无关 | `eth%d` |
+| `r8152`（USB 网卡） | 不走 `usbnet_probe` | 无关 | `eth%d`（`alloc_etherdev` 默认模板） |
+
+实测 vivo RNDIS 的 MAC 首字节恒置 `0x02` 位：
+`ea:01:b7:…`(0xea)、`6e:29:e0:…`(0x6e)、`ca:de:98:…`(0xca)、`fe:68:c7:…`(0xfe)。
+
+**这解释了一个现象**：别的厂商手机插上就能用，vivo 不行。
+如果固件用真实 OUI（`0x02` 位清零），内核直接把它命名成 `eth0`，
+Android 原生认领，**根本不需要这个模块**。vivo 用随机本地 MAC，
+才让内核走「reasonable doubt」分支把名字留在 `usb%d`。
+
+结论与推论：
+
+1. 真实 USB 网卡开机就被内核命名为 `ethN`，**我们只扫 `usb*`，碰不到它们**。
+2. 但仅凭路径无法区分 RNDIS 与「恰好也叫 `usbN` 的其他 USB 网络设备」，
+   所以判据必须落到**驱动名**：
+
+```sh
+drv=$(readlink -f "/sys/class/net/$d/device/driver" 2>/dev/null); drv=${drv##*/}
+[ "$drv" = "rndis_host" ] || continue
+```
+
+`/sys/class/net/X/device/driver` 一定可读，因为 `usbnet_probe()` 里有
+`SET_NETDEV_DEV(net, &udev->dev)` 把 netdev 挂到 USB 接口设备下。
+真机验证：`wlan0 → /sys/bus/pci/drivers/cnss_pci`，同一机制。
+
+3. 循环必须 `break`。原实现没有 `break`，多个 `usb*` 都通过路径判据时
+   `src` 会被最后一个覆盖。实测 `usb0=rndis_host`、`usb1=cdc_ether` 时
+   旧逻辑选中 `usb1`（改错），新逻辑选中 `usb0`（正确）。
+
 ---
 
 ## 7. 状态检测：为什么 `operstate` 和 `IFF_RUNNING` 都不能用

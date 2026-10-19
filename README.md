@@ -421,6 +421,9 @@ case "$p" in
 esac
 ```
 
+> ⚠️ 路径判据只是**第一步**，它区分不了「手机 RNDIS」和「外接 USB 网卡」，
+> 且循环不 `break` 时会挑错对象 —— 见下面的坑 10。v2.4 起改用**驱动名**做最终判据。
+
 ### 坑 2：`curl` 通 ≠ App 能上网
 
 这是**最致命**的陷阱。`curl` 以 root 运行时走内核路由，不受 Android 框架约束：
@@ -521,6 +524,55 @@ for f in ['action.sh','service.sh']:
 - toybox 的 `sh` **不支持** `$(( ))` 里乘除混合写法，需改用 `awk`
 - `sleep 0.2` 在部分版本不支持小数，需 `sleep 0.2 2>/dev/null || sleep 1`
 - `/system/bin/timeout` 可用（不是 GNU coreutils 版）
+
+### 坑 10：路径判据分不清「手机」和「USB 网卡」，且循环不 `break` 会挑错对象
+
+坑 1 的结论是「按 sysfs 路径判断」，但这条路**只能排除平板自身的 gadget**，
+排除不了别的 USB 网络设备。v2.3 及更早的代码是：
+
+```sh
+for d in /sys/class/net/usb*; do
+    p=$(readlink -f "$d")
+    case "$p" in
+        *xhci-hcd*) src=${d##*/} ;;   # ← 每次匹配都覆盖，没有 break
+    esac
+done
+```
+
+两个缺陷叠加：
+
+1. **外接 USB 网卡也走 xHCI**，路径同样含 `xhci-hcd`，判据无法区分。
+2. **没有 `break`**：多个网卡都匹配时，`src` 被最后一个覆盖。
+
+实测构造 `usb0 = rndis_host`（手机）、`usb1 = cdc_ether`（USB 网卡）：
+
+```
+旧逻辑选中: usb1  ← 去改 USB 网卡，手机反而漏掉 ❌
+新逻辑选中: usb0  ← 正确命中手机 ✅
+```
+
+**正确做法：看驱动名。** `usbnet_probe()` 里的
+`SET_NETDEV_DEV(net, &udev->dev)` 把 netdev 挂到 USB 接口下，
+所以 `/sys/class/net/<if>/device/driver` 一定可读（实测 `wlan0` 同理指向 `cnss_pci`）：
+
+```sh
+drv=$(readlink -f "$d/device/driver" 2>/dev/null); drv=${drv##*/}
+[ "$drv" = "rndis_host" ] || continue    # 只认 RNDIS，别的一概不碰
+src=${d##*/}; break                      # 第一个命中就停
+```
+
+各驱动的名字来源（内核 `v6.1` 源码，便于自查）：
+
+| 驱动 | 初始名字 | 原因 |
+|---|---|---|
+| `rndis_host`（手机共享） | `usb%d` | `FLAG_ETHER\|FLAG_POINTTOPOINT`，且 vivo 的 MAC 首字节 `0x02` 位恒置（本地管理） |
+| `cdc_ether`（USB 网卡） | `usb%d` → `eth%d` | 同上 flags，但 MAC 是全局唯一 OUI，`0x02` 位清零 → 改 `eth%d` |
+| `ax88179_178a`（USB 网卡） | `eth%d` | `FLAG_ETHER` 但**无** `FLAG_POINTTOPOINT` |
+| `r8152`（USB 网卡） | `eth%d` | 不走 `usbnet_probe`，直接 `alloc_etherdev()`（默认模板就是 `eth%d`） |
+
+> 顺带解释了一个现象：**别的厂商手机插上就能用，vivo 不行。**
+> 如果固件用的是真实 OUI（`0x02` 位清零），内核会直接把它命名成 `eth0`，
+> Android 原生认领，根本不需要这个模块。vivo 用随机本地 MAC，才卡在 `usbN`。
 
 ---
 

@@ -86,7 +86,7 @@ network{104}  ni{Ethernet CONNECTED}
 **名字一样，路径不同。** 实测中 RNDIS 有时是 `usb1`、有时是 `usb0`，
 跳过 `usb0` 会导致「插上手机毫无反应」。用户就是因为撞上 `usb0` 才测试失败。
 
-**正确做法**：按 sysfs 路径判断，含 `xhci-hcd` 的是 RNDIS（需改名），
+**正确做法**：按 sysfs 路径排除平板自身——含 `xhci-hcd` 的是 RNDIS（需改名），
 含 `gadget` 的是平板自身（跳过）。
 
 ```sh
@@ -96,6 +96,11 @@ case "$p" in
     *gadget*)   # 平板自身，跳过
 esac
 ```
+
+> ⚠️ 但这只是**第一步**：路径判据分不清「手机 RNDIS」和「外接 USB 网卡」
+> （后者也在 `xhci-hcd` 下），且循环不 `break` 时会挑错对象。
+> v2.4 起改用**驱动名** `/sys/class/net/<if>/device/driver = rndis_host` 做最终判据，
+> 命中即 `break`。详见根目录 [README 的坑 10](../README.md#坑-10路径判据分不清手机和usb-网卡且循环不-break-会挑错对象)。
 
 ### 坑 2：不能用 `curl` 判断"App 能不能上网"
 
@@ -146,7 +151,7 @@ case "$f" in 0x*) v=$((f)) ;; *) v=$((0x$f)) ;; esac
 | `module.prop` | 模块描述 |
 | `post-fs-data.sh` | 开机早期清理 v1.x 遗留的 pref 15000 规则 |
 | `service.sh` | 等 `sys.boot_completed` 后拉起守护，处理单实例 |
-| `rndis-eth-daemon.sh` | 常驻守护：按 sysfs 路径识别 RNDIS 网卡，改名为 `eth0` 并 up |
+| `rndis-eth-daemon.sh` | 常驻守护：按**驱动名**识别 RNDIS 网卡（`rndis_host`），改名为 `eth0` 并 up |
 | `action.sh` | 模块"操作"按钮：显示守护状态、网卡状态、Android 是否接管、连通性、日志 |
 
 守护日志：`/data/adb/rndis_eth.log`（模块目录下 `eth.log` 软链到它）
@@ -157,9 +162,12 @@ case "$f" in 0x*) v=$((f)) ;; *) v=$((0x$f)) ;; esac
 每 10 秒（发现 RNDIS 网卡时 5 秒）检查一次：
   eth0 已存在？
     → 是：确保它 up，结束
-    → 否：扫描 /sys/class/net/usb*，路径含 xhci-hcd 的？
-          → 有：down → rename eth0 → up
-          → 无：什么都不做
+    → 否：扫描 /sys/class/net/usb*
+          → 跳过路径含 gadget 的（平板自身）
+          → 读 /sys/class/net/<if>/device/driver，等于 rndis_host 才算手机共享
+          → 命中第一个就 break
+          → down → rename eth0 → up
+          → 没有命中：什么都不做
 ```
 
 **幂等**：改名完成后守护基本上什么都不做，只是每 5 秒读一个 sysfs 文件确认 `eth0` 还在。
